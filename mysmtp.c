@@ -9,8 +9,22 @@
 #include <openssl/ssl.h>
 #include <openssl/err.h>
 
+#define MAX_RCPTS 64
+#define HEADER_BUFFER_SIZE (1024 * 16)
+
 struct smtp_server {
   char *hostname, *port;
+};
+
+struct header_info {
+  const char *from;
+  const char *rcpts[MAX_RCPTS];
+  int rcpt_count;
+};
+
+struct header_handler {
+  const char *header;
+  void (*handler)(const char *arg);
 };
 
 static void init_ssl(void);
@@ -19,8 +33,21 @@ static int connect_ssl(const struct smtp_server server);
 static void close_ssl(void);
 static void smtp_write(const char *format, ...);
 static int smtp_read(void);
+static void from_header_handler(const char *arg);
+static void to_header_handler(const char *arg);
+static void read_header(void);
+
+const static struct header_handler header_handlers[] = {
+  {"From: ", from_header_handler},
+  {"To: ", to_header_handler},
+};
 
 static int verbose;
+static char header_buffer[HEADER_BUFFER_SIZE];
+static char header_tokens[HEADER_BUFFER_SIZE];
+static int header_len;
+static struct header_info header_info;
+
 static SSL_CTX *ssl_ctx;
 static char buffer[1024 * 8];
 static int buffer_len;
@@ -178,6 +205,68 @@ smtp_read(void)
   }
 }
 
+static void
+from_header_handler(const char *arg)
+{
+  if (header_info.from) {
+    fprintf(stderr, "Only one from address allowed\n");
+    exit(1);
+  }
+  header_info.from = arg;
+}
+
+static void
+to_header_handler(const char *arg)
+{
+  if (header_info.rcpt_count >= MAX_RCPTS) {
+    fprintf(stderr, "Max recipients exceeded (%d)\n", MAX_RCPTS);
+    exit(1);
+  }
+  header_info.rcpts[header_info.rcpt_count++] = arg;
+}
+
+static void
+read_header(void)
+{
+  int len, i, c;
+  char *arg;
+  memset(&header_info, 0, sizeof(header_info));
+  header_len = 0;
+  do {
+    len = 0;
+    while ( (c = fgetc(stdin)) != '\n') {
+      if (c == EOF) {
+        fprintf(stderr, "Incomplete header\n");
+        exit(1);
+      }
+      if (header_len + len > sizeof(header_buffer) - 2) {
+        fprintf(stderr, "Header too large\n");
+        exit(1);
+      }
+      header_buffer[header_len + len++] = c;
+    }
+
+    memcpy(header_tokens + header_len, header_buffer + header_len, len);
+    header_tokens[header_len + len] = '\0';
+
+    for (i = 0; i < sizeof(header_handlers) / sizeof(header_handlers[0]); i++) {
+      if (len >= strlen(header_handlers[i].header) + 1
+      && strncmp(header_tokens + header_len, header_handlers[i].header,
+          strlen(header_handlers[i].header)) == 0) {
+        arg = strtok(header_tokens + header_len + strlen(header_handlers[i].header), " ");
+        while (arg) {
+          header_handlers[i].handler(arg);
+          arg = strtok(NULL, " ");
+        }
+      }
+    }
+
+    header_len += len;
+    header_buffer[header_len++] = '\r';
+    header_buffer[header_len++] = '\n';
+  } while (len > 0);
+}
+
 int
 main(int argc, char **argv)
 {
@@ -186,6 +275,17 @@ main(int argc, char **argv)
   server.port = "465";
 
   verbose = 1;
+
+  read_header();
+  if (header_info.from == NULL) {
+    fprintf(stderr, "No from address\n");
+    exit(1);
+  }
+  if (header_info.rcpt_count <= 0) {
+    fprintf(stderr, "No recipients\n");
+    exit(1);
+  }
+
   init_ssl();
   connect_ssl(server);
   printf("RESPONSE CODE: %d\n", smtp_read());
