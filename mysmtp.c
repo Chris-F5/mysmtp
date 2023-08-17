@@ -31,6 +31,7 @@ static void init_ssl(void);
 static void end_ssl(void);
 static int connect_ssl(const struct smtp_server server);
 static void close_ssl(void);
+static void smtp_write_raw(const char *bytes, int len);
 static void smtp_write(const char *format, ...);
 static int smtp_read(void);
 static void from_header_handler(const char *arg);
@@ -139,6 +140,22 @@ close_ssl(void)
 }
 
 static void
+smtp_write_raw(const char *bytes, int len)
+{
+  int written, c;
+  assert(ssl);
+  written = 0;
+  do {
+    c = SSL_write(ssl, bytes + written, len - written);
+    if (c <= 0) {
+      fprintf(stderr, "Write failed\n");
+      exit(1);
+    }
+    written += c;
+  } while(written < len);
+}
+
+static void
 smtp_write(const char *format, ...)
 {
   va_list args;
@@ -160,15 +177,7 @@ smtp_write(const char *format, ...)
   buffer[buffer_len++] = '\r';
   buffer[buffer_len++] = '\n';
 
-  written = 0;
-  do {
-    bytes = SSL_write(ssl, buffer + written, buffer_len - written);
-    if (bytes <= 0) {
-      fprintf(stderr, "Write failed\n");
-      exit(1);
-    }
-    written += bytes;
-  } while(written < buffer_len);
+  smtp_write_raw(buffer, buffer_len);
 }
 
 static int
