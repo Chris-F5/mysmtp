@@ -159,7 +159,6 @@ static void
 smtp_write(const char *format, ...)
 {
   va_list args;
-  int written, bytes;
 
   assert(ssl);
 
