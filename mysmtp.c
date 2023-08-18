@@ -7,13 +7,17 @@
 #include <assert.h>
 #include <netdb.h>
 #include <openssl/ssl.h>
+#include <openssl/evp.h>
 #include <openssl/err.h>
 
 #define MAX_RCPTS 64
 #define HEADER_BUFFER_SIZE (1024 * 16)
 
-struct smtp_server {
-  char *hostname, *port;
+struct account_config {
+  const char *email;
+  const char *pass;
+  const char *smtp_hostname;
+  const char *smtp_port;
 };
 
 struct header_info {
@@ -29,7 +33,7 @@ struct header_handler {
 
 static void init_ssl(void);
 static void end_ssl(void);
-static int connect_ssl(const struct smtp_server server);
+static int connect_ssl(const char *hostname, const char *port);
 static void close_ssl(void);
 static void smtp_write_raw(const char *bytes, int len);
 static void smtp_write(const char *format, ...);
@@ -37,6 +41,8 @@ static int smtp_read(void);
 static void from_header_handler(const char *arg);
 static void to_header_handler(const char *arg);
 static void read_header(void);
+
+#include "config.h"
 
 const static struct header_handler header_handlers[] = {
   {"From: ", from_header_handler},
@@ -82,7 +88,7 @@ end_ssl(void)
 }
 
 static int
-connect_ssl(const struct smtp_server server)
+connect_ssl(const char *hostname, const char *port)
 {
   struct addrinfo hints;
   struct addrinfo *result, *addr;
@@ -96,10 +102,10 @@ connect_ssl(const struct smtp_server server)
   hints.ai_family = AF_UNSPEC;
   hints.ai_socktype = SOCK_STREAM;
   hints.ai_protocol = 0;
-  err = getaddrinfo(server.hostname, server.port, &hints, &result);
+  err = getaddrinfo(hostname, port, &hints, &result);
   if (err) {
     fprintf(stderr, "Failed to resolve server %s:%s : %s\n",
-        server.hostname, server.port, gai_strerror(err));
+        hostname, port, gai_strerror(err));
     return 1;
   }
   for (addr = result; addr; addr = addr->ai_next) {
@@ -114,7 +120,7 @@ connect_ssl(const struct smtp_server server)
   }
   freeaddrinfo(result);
   if (addr == NULL) {
-    fprintf(stderr, "Failed to connect to %s:%s\n", server.hostname, server.port);
+    fprintf(stderr, "Failed to connect to %s:%s\n", hostname, port);
     return 1;
   }
 
@@ -125,7 +131,7 @@ connect_ssl(const struct smtp_server server)
     return 1;
   }
   if (verbose)
-    fprintf(stderr, "* Connected to %s:%s\n", server.hostname, server.port);
+    fprintf(stderr, "* Connected to %s:%s\n", hostname, port);
   return 0;
 }
 
@@ -278,26 +284,51 @@ read_header(void)
 int
 main(int argc, char **argv)
 {
-  struct smtp_server server;
-  server.hostname = "smtp.gmail.com";
-  server.port = "465";
+  int i;
+  const struct account_config *account;
+  char auth[192];
+  char auth_encoded[257];
 
   verbose = 1;
-
   read_header();
+
   if (header_info.from == NULL) {
     fprintf(stderr, "No from address\n");
-    exit(1);
+    return 1;
   }
   if (header_info.rcpt_count <= 0) {
     fprintf(stderr, "No recipients\n");
-    exit(1);
+    return 1;
   }
 
+  account = NULL;
+  for (i = 0; i < sizeof(accounts) / sizeof(accounts[0]); i++)
+    if (strcmp(accounts[i].email, header_info.from) == 0) {
+      account = &accounts[i];
+      break;
+    }
+  if (account == NULL) {
+    fprintf(stderr, "No config for account '%s'\n", header_info.from);
+    return 1;
+  }
+
+  if (strlen(account->email) + strlen(account->pass) + 2 > sizeof(auth)) {
+    fprintf(stderr, "Auth too large\n");
+    return 1;
+  }
+  auth[0] = '\0';
+  memcpy(auth + 1, account->email, strlen(account->email));
+  auth[strlen(account->email) + 1] = '\0';
+  memcpy(auth + strlen(account->email) + 2, account->pass, strlen(account->pass));
+  EVP_EncodeBlock((unsigned char *)auth_encoded, (const unsigned char *)auth,
+      strlen(account->email) + strlen(account->pass) + 2);
+
   init_ssl();
-  connect_ssl(server);
+  connect_ssl(account->smtp_hostname, account->smtp_port);
   printf("RESPONSE CODE: %d\n", smtp_read());
-  smtp_write("EHLO smtp.gmail.com");
+  smtp_write("EHLO localhost");
+  printf("RESPONSE CODE: %d\n", smtp_read());
+  smtp_write("AUTH PLAIN %s", auth_encoded);
   printf("RESPONSE CODE: %d\n", smtp_read());
   close_ssl();
   end_ssl();

@@ -9,7 +9,10 @@ OBJ = mysmtp.o
 $(OUTPUT): $(OBJ)
 	$(CC) $(LDFLAGS) -o $@ $(OBJ)
 
-%.o: %.c cnotec.h
+config.h:
+	cp config.def.h $@
+
+%.o: %.c config.h
 	$(CC) -c $(CFLAGS) -o $@ $<
 
 run: $(OUTPUT)
