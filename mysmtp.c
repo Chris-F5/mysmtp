@@ -222,11 +222,23 @@ smtp_read(void)
 static void
 from_header_handler(char *arg)
 {
+  char *email, *end;
   if (header_info.from) {
     fprintf(stderr, "Only one from address allowed\n");
     exit(1);
   }
-  header_info.from = arg;
+  email = strchr(arg, '<') + 1;
+  if (email) {
+    end = strchr(email, '>');
+    if (end == NULL) {
+      fprintf(stderr, "From email does not close angle brackets\n");
+      exit(1);
+    }
+    *end = '\0';
+    header_info.from = email;
+  } else {
+    header_info.from = arg;
+  }
 }
 
 static void
@@ -272,10 +284,13 @@ read_header(void)
       }
       header_buffer[header_len] = header_tokens[header_len] = '\0';
       header_len++;
-      for (i = 0; i < sizeof(header_handlers) / sizeof(header_handlers[0]); i++)
+      for (i = 0; i < sizeof(header_handlers) / sizeof(header_handlers[0]); i++) {
         if (strncmp(header_tokens + line, header_handlers[i].header, 
-              strlen(header_handlers[i].header)) == 0)
+              strlen(header_handlers[i].header)) == 0) {
           header_handlers[i].handler(header_tokens + line + strlen(header_handlers[i].header));
+          break;
+        }
+      }
       line = header_len;
     } else {
       header_buffer[header_len] = header_tokens[header_len] = c;
