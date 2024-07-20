@@ -10,27 +10,6 @@
 #include <openssl/evp.h>
 #include <openssl/err.h>
 
-#define MAX_RCPTS 64
-#define HEADER_BUFFER_SIZE (1024 * 16)
-
-struct account_config {
-  const char *email;
-  const char *pass;
-  const char *smtp_hostname;
-  const char *smtp_port;
-};
-
-struct header_info {
-  const char *from;
-  const char *rcpts[MAX_RCPTS];
-  int rcpt_count;
-};
-
-struct header_handler {
-  const char *header;
-  void (*handler)(char *arg);
-};
-
 static void init_ssl(void);
 static void end_ssl(void);
 static int connect_ssl(const char *hostname, const char *port);
@@ -38,22 +17,9 @@ static void close_ssl(void);
 static void smtp_write(void);
 static void smtp_writef(const char *format, ...);
 static int smtp_read(void);
-static void from_header_handler(char *arg);
-static void to_header_handler(char *arg);
 static void read_header(void);
 
-#include "config.h"
-
-const static struct header_handler header_handlers[] = {
-  {"From: ", from_header_handler},
-  {"To: ", to_header_handler},
-};
-
 static int verbose;
-static char header_buffer[HEADER_BUFFER_SIZE];
-static char header_tokens[HEADER_BUFFER_SIZE];
-static int header_len;
-static struct header_info header_info;
 
 static SSL_CTX *ssl_ctx;
 static char smtp_buffer[1024 * 8];
@@ -219,193 +185,42 @@ smtp_read(void)
   }
 }
 
-static void
-from_header_handler(char *arg)
-{
-  char *email, *end;
-  if (header_info.from) {
-    fprintf(stderr, "Only one from address allowed\n");
-    exit(1);
-  }
-  email = strchr(arg, '<') + 1;
-  if (email) {
-    end = strchr(email, '>');
-    if (end == NULL) {
-      fprintf(stderr, "From email does not close angle brackets\n");
-      exit(1);
-    }
-    *end = '\0';
-    header_info.from = email;
-  } else {
-    header_info.from = arg;
-  }
-}
-
-static void
-to_header_handler(char *arg)
-{
-  const char *addr;
-  addr = strtok(arg, " ");
-  while (addr) {
-    if (header_info.rcpt_count >= MAX_RCPTS) {
-      fprintf(stderr, "Max recipients exceeded (%d)\n", MAX_RCPTS);
-      exit(1);
-    }
-    header_info.rcpts[header_info.rcpt_count++] = addr;
-    addr = strtok(NULL, " ");
-  }
-}
-
-static void
-read_header(void)
-{
-  int c, i, line;
-  header_buffer[0] = header_tokens[0] = '\0';
-  header_len = 0;
-  line = 0;
-  for (;;) {
-    c = fgetc(stdin);
-    if (c == EOF) {
-      fprintf(stderr, "Incomplete header\n");
-      exit(1);
-    }
-    if (header_len >= HEADER_BUFFER_SIZE) {
-      fprintf(stderr, "Header too large\n");
-      exit(1);
-    }
-    if (line == header_len && c == '.') {
-      header_buffer[header_len] = header_tokens[header_len] = '.';
-      header_len++;
-      line++;
-    }
-    if (c == '\n') {
-      if (header_len == 0 || header_buffer[header_len - 1] == '\0') {
-        break;
-      }
-      header_buffer[header_len] = header_tokens[header_len] = '\0';
-      header_len++;
-      for (i = 0; i < sizeof(header_handlers) / sizeof(header_handlers[0]); i++) {
-        if (strncmp(header_tokens + line, header_handlers[i].header, 
-              strlen(header_handlers[i].header)) == 0) {
-          header_handlers[i].handler(header_tokens + line + strlen(header_handlers[i].header));
-          break;
-        }
-      }
-      line = header_len;
-    } else {
-      header_buffer[header_len] = header_tokens[header_len] = c;
-      header_len++;
-    }
-  }
-}
-
 int
-main(int argc, char **argv)
+main(int argc, char *argv[])
 {
-  int i, status, c;
-  const struct account_config *account;
-  char auth[192];
-  char auth_encoded[257];
-
+  int status, line, i, intermediate;
+  char line_buffer[1024];
+  char *hostname, *port;
+  hostname = "smtp.gmail.com";
+  port = "465";
+  line = 0;
   verbose = 1;
-  read_header();
-
-  if (header_info.from == NULL) {
-    fprintf(stderr, "No from address\n");
-    return 1;
-  }
-  if (header_info.rcpt_count <= 0) {
-    fprintf(stderr, "No recipients\n");
-    return 1;
-  }
-
-  account = NULL;
-  for (i = 0; i < sizeof(accounts) / sizeof(accounts[0]); i++)
-    if (strcmp(accounts[i].email, header_info.from) == 0) {
-      account = &accounts[i];
-      break;
-    }
-  if (account == NULL) {
-    fprintf(stderr, "No config for account '%s'\n", header_info.from);
-    return 1;
-  }
-
-  if (strlen(account->email) + strlen(account->pass) + 2 > sizeof(auth)) {
-    fprintf(stderr, "Auth too large\n");
-    return 1;
-  }
-  auth[0] = '\0';
-  memcpy(auth + 1, account->email, strlen(account->email));
-  auth[strlen(account->email) + 1] = '\0';
-  memcpy(auth + strlen(account->email) + 2, account->pass, strlen(account->pass));
-  EVP_EncodeBlock((unsigned char *)auth_encoded, (const unsigned char *)auth,
-      strlen(account->email) + strlen(account->pass) + 2);
+  intermediate = 0;
 
   init_ssl();
-  connect_ssl(account->smtp_hostname, account->smtp_port);
-  if ( (status = smtp_read()) / 100 != 2) {
-    fprintf(stderr, "SMTP session initiation failed (%d)\n", status);
+  connect_ssl(hostname, port);
+
+  status = smtp_read();
+  if (status / 100 != 2) {
+    fprintf(stderr, "STMP failed to initialize with status %d.\n", status);
     goto smtp_error;
   }
-  smtp_writef("EHLO localhost");
-  if ( (status = smtp_read()) / 100 != 2) {
-    fprintf(stderr, "SMTP client initiation failed (%d)\n", status);
-    goto smtp_error;
-  }
-  smtp_writef("AUTH PLAIN %s", auth_encoded);
-  if ( (status = smtp_read()) / 100 != 2) {
-    fprintf(stderr, "SMTP authentication failed (%d)\n", status);
-    goto smtp_error;
-  }
-  smtp_writef("MAIL FROM:<%s>", account->email);
-  if ( (status = smtp_read()) / 100 != 2) {
-    fprintf(stderr, "SMTP sender identification failed (%d)\n", status);
-    goto smtp_error;
-  }
-  for (i = 0; i < header_info.rcpt_count; i++) {
-    smtp_writef("RCPT TO:<%s>", header_info.rcpts[i]);
-    if ( (status = smtp_read()) / 100 != 2) {
-      fprintf(stderr, "SMTP receiver information failed (%d)\n", status);
-      goto smtp_error;
+  while (fgets(line_buffer, sizeof(line_buffer), stdin)) {
+    line++;
+    for (i = 0; line_buffer[i] != '\n' && line_buffer[i] != '\0'; i++);
+    line_buffer[i] = '\0';
+    if (line_buffer[0] == '.' && line_buffer[1] == '\0')
+      intermediate = 0;
+    smtp_writef("%s", line_buffer);
+    if (!intermediate) {
+      status = smtp_read();
+      if (status / 100 == 3) {
+        intermediate = 1;
+      } else if (status / 100 != 2) {
+        fprintf(stderr, "STMP failed on line %d with status %d.\n", line, status);
+        goto smtp_error;
+      }
     }
-  }
-  smtp_writef("DATA");
-  if ( (status = smtp_read()) / 100 != 3) {
-    fprintf(stderr, "SMTP data transfer initiate failed (%d)\n", status);
-    goto smtp_error;
-  }
-  i = 0;
-  while (i < header_len) {
-    smtp_writef("%s", header_buffer + i);
-    i += strlen(header_buffer + i) + 1;
-  }
-  smtp_writef("");
-  smtp_buffer_len = 0;
-  while ( (c = fgetc(stdin)) != EOF) {
-    if (smtp_buffer_len >= sizeof(smtp_buffer)) {
-      fprintf(stderr, "Mail data line too long\n");
-      exit(1);
-    }
-    if (smtp_buffer_len == 0 && c == '.')
-      smtp_buffer[smtp_buffer_len++] = '.';
-    if (c == '\n' || (c == EOF && smtp_buffer_len)) {
-      smtp_write();
-      smtp_buffer_len = 0;
-    } else {
-      smtp_buffer[smtp_buffer_len++] = c;
-    }
-  }
-  if (smtp_buffer_len)
-    smtp_write();
-  smtp_writef(".");
-  if ( (status = smtp_read()) / 100 != 2) {
-    fprintf(stderr, "SMTP data transfer failed (%d)\n", status);
-    goto smtp_error;
-  }
-  smtp_writef("QUIT");
-  if ( (status = smtp_read()) / 100 != 2) {
-    fprintf(stderr, "SMTP quit failed (%d)\n", status);
-    goto smtp_error;
   }
   close_ssl();
   end_ssl();

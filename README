@@ -1,0 +1,14 @@
+
+Build with
+    gcc -lssl -lcrypto -omysmtp mysmtp.c
+
+Example Input:
+    EHLO localhost
+    AUTH PLAIN $(printf '\0name@server.com\0applicationpassword' | base64)
+    MAIL FROM:<name@server.com>
+    RCPT TO:<name@server.com>
+    DATA
+    hello world
+    this is a test message
+    .
+    QUIT
