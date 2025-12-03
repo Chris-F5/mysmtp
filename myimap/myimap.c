@@ -17,12 +17,13 @@ static void close_ssl(void);
 static void smtp_write(void);
 static void smtp_writef(const char *format, ...);
 static int smtp_read(void);
+static void read_header(void);
 
 static int verbose;
 
 static SSL_CTX *ssl_ctx;
-static char smtp_buffer[1024 * 8];
-static int smtp_buffer_len;
+static char recv_buffer[1024 * 8];
+static int recv_buffer_len;
 
 static int sock = -1;
 static SSL *ssl;

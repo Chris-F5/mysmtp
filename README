@@ -12,3 +12,6 @@ Example Input:
     this is a test message
     .
     QUIT
+
+You can manually connect to a smtp server like this:
+    nc -C --ssl smtp.gmail.com 465

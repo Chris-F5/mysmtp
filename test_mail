@@ -1,0 +1,9 @@
+EHLO localhost
+AUTH PLAIN <ENCODEDAUTHHERE>
+MAIL FROM:<christopher.lang.256@gmail.com>
+RCPT TO:<christopher.lang.256@gmail.com>
+DATA
+hello world
+this is a test message
+.
+QUIT
